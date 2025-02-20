@@ -9,19 +9,21 @@ xp_data = {}
 @app.route('/update_xp', methods=['POST'])
 def update_xp():
     data = request.get_json()
-    user_id = data.get('userId')
+    user_id = data.get('userId')       # Must match what's sent from Roblox
     username = data.get('username')
     xp = data.get('xp')
-    offense_data = data.get('offenseData')  # New field for additional datastore info
+    offense_data = data.get('offenseData')  # Optional field for offense data
 
+    # Validate required fields
     if not user_id or not username or xp is None:
         return jsonify({'error': 'Missing required data'}), 400
 
-    # Store or update the data (in production, save to your database)
+    # Store all relevant info, including userId
     xp_data[user_id] = {
+        'userId': user_id,
         'username': username,
         'xp': xp,
-        'offenseData': offense_data  # Save extra datastore info
+        'offenseData': offense_data
     }
     return jsonify({'status': 'success'})
 
@@ -31,11 +33,13 @@ def get_user_data():
     if not username_query:
         return jsonify({'error': 'Username parameter is missing'}), 400
 
-    # Search for the user by username (case-insensitive)
+    # Search in xp_data by username (case-insensitive)
     for entry in xp_data.values():
         if entry['username'].lower() == username_query.lower():
             return jsonify(entry)
+
     return jsonify({'error': 'User not found'}), 404
 
 if __name__ == '__main__':
+    # For local testing. On Render, you'd use gunicorn + your Procfile instead.
     app.run(debug=True)

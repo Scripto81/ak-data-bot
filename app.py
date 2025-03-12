@@ -256,7 +256,8 @@ def set_group_rank():
         logger.info(f"Setting group rank: userId={user_id}, groupId={group_id}, roleId={role_id}")
         resp = requests.patch(url, headers=headers, json=payload, timeout=10)
         resp.raise_for_status()
-        logger.info(f"Roblox API response: {resp.status_code}")
+        logger.info(f"Roblox API response status: {resp.status_code}")
+        logger.info(f"Roblox API response text: {resp.text}")
         return jsonify({'status': 'success'})
     except Exception as e:
         logger.error(f"Error setting group rank: {str(e)}")

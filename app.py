@@ -174,11 +174,11 @@ def set_group_rank():
     roblox_api_key = os.environ.get('ROBLOX_API_KEY')
     if not roblox_api_key:
         return jsonify({'error': 'ROBLOX_API_KEY not set'}), 500
-    url = f"https://groups.roblox.com/v1/groups/{group_id}/roles/{role_id}"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {roblox_api_key}"}
-    payload = {"targetId": int(user_id)}
+    url = f"https://groups.roblox.com/v1/groups/{group_id}/users/{user_id}"
+    headers = {"Content-Type": "application/json", "Cookie": f".ROBLOSECURITY={roblox_api_key}"}
+    payload = {"roleId": int(role_id)}
     try:
-        resp = requests.post(url, headers=headers, json=payload)
+        resp = requests.patch(url, headers=headers, json=payload)
         resp.raise_for_status()
         return jsonify({'status': 'success'})
     except Exception as e:

@@ -5,12 +5,12 @@ import json
 import requests
 import os
 import logging
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
 
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     filename='flask_api.log',
@@ -20,8 +20,6 @@ logger = logging.getLogger('flask_api')
 
 app = Flask(__name__)
 DATABASE = os.getenv("DATABASE_PATH", "xp_data.db")
-
-limiter = Limiter(app=app, key_func=get_remote_address, default_limits=["200 per day", "50 per hour"])
 
 def get_db_connection():
     try:
@@ -66,7 +64,6 @@ def health_check():
     return jsonify({"status": "ok"}), 200
 
 @app.route('/update_xp', methods=['POST'])
-@limiter.limit("10 per minute")
 def update_xp():
     try:
         data = request.get_json()
@@ -106,7 +103,6 @@ def update_xp():
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/get_user_data', methods=['GET'])
-@limiter.limit("20 per minute")
 def get_user_data():
     try:
         username = request.args.get('username')
@@ -125,7 +121,6 @@ def get_user_data():
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/set_xp', methods=['POST'])
-@limiter.limit("10 per minute")
 def set_xp():
     try:
         data = request.get_json()
@@ -158,7 +153,6 @@ def set_xp():
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/leaderboard', methods=['GET'])
-@limiter.limit("20 per minute")
 def get_leaderboard():
     try:
         limit = min(int(request.args.get('limit', 10)), 50)
@@ -176,7 +170,6 @@ def get_leaderboard():
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/get_group_rank', methods=['GET'])
-@limiter.limit("20 per minute")
 def get_group_rank():
     try:
         user_id = request.args.get('userId')
@@ -203,7 +196,6 @@ def get_group_rank():
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/get_role_id', methods=['GET'])
-@limiter.limit("20 per minute")
 def get_role_id():
     try:
         group_id = request.args.get('groupId')
@@ -230,7 +222,6 @@ def get_role_id():
         return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/set_group_rank', methods=['POST'])
-@limiter.limit("10 per minute")
 def set_group_rank():
     try:
         data = request.get_json()

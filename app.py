@@ -2,6 +2,8 @@ import sqlite3
 from flask import Flask, request, jsonify
 import datetime
 import json
+import requests
+import os
 
 app = Flask(__name__)
 DATABASE = "xp_data.db"
@@ -138,6 +140,49 @@ def get_user_stats():
     history = [{'xp_change': row['xp_change'], 'timestamp': row['timestamp']} for row in cur.fetchall()]
     conn.close()
     return jsonify({'userId': user_id, 'xp_history': history})
+
+@app.route('/get_group_rank', methods=['GET'])
+def get_group_rank():
+    user_id = request.args.get('userId')
+    group_id = request.args.get('groupId')
+    if not user_id or not group_id:
+        return jsonify({'error': 'Missing userId or groupId'}), 400
+    roblox_api_key = os.environ.get('ROBLOX_API_KEY')
+    if not roblox_api_key:
+        return jsonify({'error': 'ROBLOX_API_KEY not set'}), 500
+    url = f"https://groups.roblox.com/v1/users/{user_id}/groups/roles"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {roblox_api_key}"}
+    try:
+        resp = requests.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        for group_info in data.get("data", []):
+            if group_info.get("group", {}).get("id") == int(group_id):
+                return jsonify({'rank': group_info.get("role", {}).get("name", "Not in group"), 'roleId': group_info.get("role", {}).get("id", 0)})
+        return jsonify({'rank': "Not in group", 'roleId': 0})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/set_group_rank', methods=['POST'])
+def set_group_rank():
+    data = request.get_json()
+    user_id = data.get('userId')
+    group_id = data.get('groupId')
+    role_id = data.get('roleId')
+    if not user_id or not group_id or not role_id:
+        return jsonify({'error': 'Missing userId, groupId, or roleId'}), 400
+    roblox_api_key = os.environ.get('ROBLOX_API_KEY')
+    if not roblox_api_key:
+        return jsonify({'error': 'ROBLOX_API_KEY not set'}), 500
+    url = f"https://groups.roblox.com/v1/groups/{group_id}/roles/{role_id}"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {roblox_api_key}"}
+    payload = {"targetId": int(user_id)}
+    try:
+        resp = requests.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)

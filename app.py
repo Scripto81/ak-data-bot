@@ -9,10 +9,8 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     filename='flask_api.log',
@@ -23,7 +21,6 @@ logger = logging.getLogger('flask_api')
 app = Flask(__name__)
 DATABASE = os.getenv("DATABASE_PATH", "xp_data.db")
 
-# Rate limiter
 limiter = Limiter(app=app, key_func=get_remote_address, default_limits=["200 per day", "50 per hour"])
 
 def get_db_connection():
@@ -63,6 +60,10 @@ def init_db():
         raise
 
 init_db()
+
+@app.route('/', methods=['HEAD', 'GET'])
+def health_check():
+    return jsonify({"status": "ok"}), 200
 
 @app.route('/update_xp', methods=['POST'])
 @limiter.limit("10 per minute")

@@ -152,7 +152,6 @@ def get_leaderboard():
         return jsonify({'error': 'Limit must be an integer'}), 400
     conn = get_db_connection()
     cur = conn.cursor()
-    # Using string formatting for the LIMIT since the value is already sanitized
     cur.execute(f"SELECT username, xp FROM xp_data ORDER BY xp DESC LIMIT {limit}")
     rows = cur.fetchall()
     conn.close()
@@ -188,7 +187,7 @@ def get_group_rank_endpoint():
     if not roblox_api_key:
         return jsonify({'error': 'ROBLOX_API_KEY not set'}), 500
     url = f"https://groups.roblox.com/v1/users/{user_id}/groups/roles"
-    headers = {"Content-Type": "application/json", "Cookie": f".ROBLOSECURITY={roblox_api_key}"}
+    headers = {"Content-Type": "application/json", "Cookie": f"ROBLOSECURITY={roblox_api_key}"}
     try:
         logger.info(f"Fetching group rank for userId={user_id}, groupId={group_id}")
         resp = requests.get(url, headers=headers, timeout=10)
@@ -197,7 +196,8 @@ def get_group_rank_endpoint():
         logger.info(f"Roblox API response: {data}")
         for group_info in data.get("data", []):
             if group_info.get("group", {}).get("id") == int(group_id):
-                return jsonify({'rank': group_info.get("role", {}).get("name", "Not in group"), 'roleId': group_info.get("role", {}).get("id", 0)})
+                return jsonify({'rank': group_info.get("role", {}).get("name", "Not in group"),
+                                'roleId': group_info.get("role", {}).get("id", 0)})
         return jsonify({'rank': "Not in group", 'roleId': 0})
     except Exception as e:
         logger.error(f"Error fetching group rank: {str(e)}")
@@ -218,7 +218,7 @@ def get_role_id():
     if not roblox_api_key:
         return jsonify({'error': 'ROBLOX_API_KEY not set'}), 500
     url = f"https://groups.roblox.com/v1/groups/{group_id}/roles"
-    headers = {"Content-Type": "application/json", "Cookie": f".ROBLOSECURITY={roblox_api_key}"}
+    headers = {"Content-Type": "application/json", "Cookie": f"ROBLOSECURITY={roblox_api_key}"}
     try:
         logger.info(f"Fetching roles for groupId={group_id}")
         resp = requests.get(url, headers=headers, timeout=10)
@@ -251,7 +251,7 @@ def set_group_rank():
     if not roblox_api_key:
         return jsonify({'error': 'ROBLOX_API_KEY not set'}), 500
     url = f"https://groups.roblox.com/v1/groups/{group_id}/users/{user_id}"
-    headers = {"Content-Type": "application/json", "Cookie": f".ROBLOSECURITY={roblox_api_key}"}
+    headers = {"Content-Type": "application/json", "Cookie": f"ROBLOSECURITY={roblox_api_key}"}
     payload = {"roleId": int(role_id)}
     try:
         logger.info(f"Setting group rank: userId={user_id}, groupId={group_id}, roleId={role_id}")

@@ -21,7 +21,7 @@ limiter = Limiter(
 )
 
 def get_db_connection():
-    conn = sqlite3.connect(DATABASE)
+    conn = sqlite3.connect(DATABASE, detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -152,7 +152,8 @@ def get_leaderboard():
         return jsonify({'error': 'Limit must be an integer'}), 400
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT username, xp FROM xp_data ORDER BY xp DESC LIMIT ?", (limit,))
+    # Using string formatting for the LIMIT since the value is already sanitized
+    cur.execute(f"SELECT username, xp FROM xp_data ORDER BY xp DESC LIMIT {limit}")
     rows = cur.fetchall()
     conn.close()
     leaderboard = [{'username': row['username'], 'xp': row['xp']} for row in rows]
@@ -173,7 +174,7 @@ def get_user_stats():
 
 @app.route('/get_group_rank', methods=['GET'])
 @limiter.limit("20 per minute")
-def get_group_rank():
+def get_group_rank_endpoint():
     user_id = request.args.get('userId')
     group_id = request.args.get('groupId')
     if not user_id or not group_id:

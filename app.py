@@ -4,9 +4,21 @@ import datetime
 import json
 import requests
 import os
+import logging
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('flask_api')
 
 app = Flask(__name__)
 DATABASE = "xp_data.db"
+
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
 
 def get_db_connection():
     conn = sqlite3.connect(DATABASE)
@@ -39,6 +51,7 @@ def init_db():
 init_db()
 
 @app.route('/update_xp', methods=['POST'])
+@limiter.limit("10 per minute")
 def update_xp():
     data = request.get_json()
     user_id = data.get('userId')
@@ -47,6 +60,8 @@ def update_xp():
     offense_data = data.get('offenseData')
     if not user_id or not username or xp is None:
         return jsonify({'error': 'Missing required data'}), 400
+    if not isinstance(xp, int) or xp < 0:
+        return jsonify({'error': 'XP must be a non-negative integer'}), 400
     last_updated = datetime.datetime.utcnow().isoformat()
     offense_json = json.dumps(offense_data) if offense_data is not None else None
     conn = get_db_connection()
@@ -71,6 +86,7 @@ def update_xp():
     return jsonify({'status': 'success'})
 
 @app.route('/get_user_data', methods=['GET'])
+@limiter.limit("20 per minute")
 def get_user_data():
     username_query = request.args.get('username')
     if not username_query:
@@ -94,18 +110,24 @@ def get_user_data():
         return jsonify({'error': 'User not found'}), 404
 
 @app.route('/set_xp', methods=['POST'])
+@limiter.limit("10 per minute")
 def set_xp():
     data = request.get_json()
     user_id = data.get('userId')
     new_xp = data.get('xp')
     if not user_id or new_xp is None:
         return jsonify({'error': 'Missing userId or xp'}), 400
+    if not isinstance(new_xp, int) or new_xp < 0:
+        return jsonify({'error': 'XP must be a non-negative integer'}), 400
     last_updated = datetime.datetime.utcnow().isoformat()
     conn = get_db_connection()
     with conn:
         cur = conn.execute("SELECT xp FROM xp_data WHERE userId = ?", (str(user_id),))
         row = cur.fetchone()
-        old_xp = row['xp'] if row else 0
+        if not row:
+            conn.close()
+            return jsonify({'error': 'User not found in xp_data'}), 404
+        old_xp = row['xp']
         xp_change = new_xp - old_xp
         cursor = conn.execute("UPDATE xp_data SET xp = ?, last_updated = ? WHERE userId = ?",
                               (new_xp, last_updated, str(user_id)))
@@ -119,8 +141,15 @@ def set_xp():
     return jsonify({'status': 'success', 'newXp': new_xp})
 
 @app.route('/leaderboard', methods=['GET'])
+@limiter.limit("20 per minute")
 def get_leaderboard():
-    limit = int(request.args.get('limit', 10))
+    limit = request.args.get('limit', 10)
+    try:
+        limit = int(limit)
+        if limit <= 0 or limit > 50:
+            return jsonify({'error': 'Limit must be between 1 and 50'}), 400
+    except ValueError:
+        return jsonify({'error': 'Limit must be an integer'}), 400
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute("SELECT username, xp FROM xp_data ORDER BY xp DESC LIMIT ?", (limit,))
@@ -130,6 +159,7 @@ def get_leaderboard():
     return jsonify({'leaderboard': leaderboard})
 
 @app.route('/user_stats', methods=['GET'])
+@limiter.limit("20 per minute")
 def get_user_stats():
     user_id = request.args.get('userId')
     if not user_id:
@@ -142,28 +172,67 @@ def get_user_stats():
     return jsonify({'userId': user_id, 'xp_history': history})
 
 @app.route('/get_group_rank', methods=['GET'])
+@limiter.limit("20 per minute")
 def get_group_rank():
     user_id = request.args.get('userId')
     group_id = request.args.get('groupId')
     if not user_id or not group_id:
         return jsonify({'error': 'Missing userId or groupId'}), 400
+    try:
+        int(user_id)
+        int(group_id)
+    except ValueError:
+        return jsonify({'error': 'userId and groupId must be integers'}), 400
     roblox_api_key = os.environ.get('ROBLOX_API_KEY')
     if not roblox_api_key:
         return jsonify({'error': 'ROBLOX_API_KEY not set'}), 500
     url = f"https://groups.roblox.com/v1/users/{user_id}/groups/roles"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {roblox_api_key}"}
+    headers = {"Content-Type": "application/json", "Cookie": f".ROBLOSECURITY={roblox_api_key}"}
     try:
-        resp = requests.get(url, headers=headers)
+        logger.info(f"Fetching group rank for userId={user_id}, groupId={group_id}")
+        resp = requests.get(url, headers=headers, timeout=10)
         resp.raise_for_status()
         data = resp.json()
+        logger.info(f"Roblox API response: {data}")
         for group_info in data.get("data", []):
             if group_info.get("group", {}).get("id") == int(group_id):
                 return jsonify({'rank': group_info.get("role", {}).get("name", "Not in group"), 'roleId': group_info.get("role", {}).get("id", 0)})
         return jsonify({'rank': "Not in group", 'roleId': 0})
     except Exception as e:
+        logger.error(f"Error fetching group rank: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/get_role_id', methods=['GET'])
+@limiter.limit("20 per minute")
+def get_role_id():
+    group_id = request.args.get('groupId')
+    rank_name = request.args.get('rankName')
+    if not group_id or not rank_name:
+        return jsonify({'error': 'Missing groupId or rankName'}), 400
+    try:
+        int(group_id)
+    except ValueError:
+        return jsonify({'error': 'groupId must be an integer'}), 400
+    roblox_api_key = os.environ.get('ROBLOX_API_KEY')
+    if not roblox_api_key:
+        return jsonify({'error': 'ROBLOX_API_KEY not set'}), 500
+    url = f"https://groups.roblox.com/v1/groups/{group_id}/roles"
+    headers = {"Content-Type": "application/json", "Cookie": f".ROBLOSECURITY={roblox_api_key}"}
+    try:
+        logger.info(f"Fetching roles for groupId={group_id}")
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        for role in data.get("roles", []):
+            if role.get("name").lower() == rank_name.lower():
+                return jsonify({'roleId': role.get("id")})
+        return jsonify({'error': 'Rank name not found in group'}), 404
+    except Exception as e:
+        logger.error(f"Error fetching role ID: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/set_group_rank', methods=['POST'])
+@limiter.limit("10 per minute")
 def set_group_rank():
     data = request.get_json()
     user_id = data.get('userId')
@@ -171,6 +240,12 @@ def set_group_rank():
     role_id = data.get('roleId')
     if not user_id or not group_id or not role_id:
         return jsonify({'error': 'Missing userId, groupId, or roleId'}), 400
+    try:
+        int(user_id)
+        int(group_id)
+        int(role_id)
+    except ValueError:
+        return jsonify({'error': 'userId, groupId, and roleId must be integers'}), 400
     roblox_api_key = os.environ.get('ROBLOX_API_KEY')
     if not roblox_api_key:
         return jsonify({'error': 'ROBLOX_API_KEY not set'}), 500
@@ -178,10 +253,13 @@ def set_group_rank():
     headers = {"Content-Type": "application/json", "Cookie": f".ROBLOSECURITY={roblox_api_key}"}
     payload = {"roleId": int(role_id)}
     try:
-        resp = requests.patch(url, headers=headers, json=payload)
+        logger.info(f"Setting group rank: userId={user_id}, groupId={group_id}, roleId={role_id}")
+        resp = requests.patch(url, headers=headers, json=payload, timeout=10)
         resp.raise_for_status()
+        logger.info(f"Roblox API response: {resp.status_code}")
         return jsonify({'status': 'success'})
     except Exception as e:
+        logger.error(f"Error setting group rank: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':

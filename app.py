@@ -7,15 +7,8 @@ import os
 import logging
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    filename='flask_api.log',
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, filename='flask_api.log', format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('flask_api')
 
 app = Flask(__name__)
@@ -100,7 +93,7 @@ def update_xp():
         return jsonify({'status': 'success'})
     except Exception as e:
         logger.error(f"Error in update_xp: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 @app.route('/get_user_data', methods=['GET'])
 def get_user_data():
@@ -118,7 +111,7 @@ def get_user_data():
         return jsonify({'error': 'User not found'}), 404
     except Exception as e:
         logger.error(f"Error in get_user_data: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 @app.route('/set_xp', methods=['POST'])
 def set_xp():
@@ -150,7 +143,7 @@ def set_xp():
         return jsonify({'status': 'success', 'newXp': new_xp})
     except Exception as e:
         logger.error(f"Error in set_xp: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 @app.route('/leaderboard', methods=['GET'])
 def get_leaderboard():
@@ -167,7 +160,7 @@ def get_leaderboard():
         return jsonify({'error': 'Limit must be an integer'}), 400
     except Exception as e:
         logger.error(f"Error in get_leaderboard: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 @app.route('/get_group_rank', methods=['GET'])
 def get_group_rank():
@@ -179,7 +172,7 @@ def get_group_rank():
         roblox_api_key = os.getenv("ROBLOX_API_KEY")
         if not roblox_api_key:
             logger.error("ROBLOX_API_KEY not set in environment variables")
-            return jsonify({'error': 'Server configuration error'}), 500
+            return jsonify({'error': 'Server configuration error', 'details': 'ROBLOX_API_KEY not set'}), 500
         url = f"https://groups.roblox.com/v1/users/{user_id}/groups/roles"
         headers = {"Cookie": f".ROBLOSECURITY={roblox_api_key}"}
         resp = requests.get(url, headers=headers, timeout=10)
@@ -191,10 +184,10 @@ def get_group_rank():
         return jsonify({"rank": "Not in group", "roleId": 0})
     except requests.RequestException as e:
         logger.error(f"Error fetching group rank: {str(e)}, response={e.response.text if e.response else 'No response'}")
-        return jsonify({'error': 'Failed to fetch group data'}), 500
+        return jsonify({'error': 'Failed to fetch group data', 'details': e.response.text if e.response else 'No response'}), 500
     except Exception as e:
         logger.error(f"Error in get_group_rank: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 @app.route('/get_role_id', methods=['GET'])
 def get_role_id():
@@ -206,7 +199,7 @@ def get_role_id():
         roblox_api_key = os.getenv("ROBLOX_API_KEY")
         if not roblox_api_key:
             logger.error("ROBLOX_API_KEY not set in environment variables")
-            return jsonify({'error': 'Server configuration error'}), 500
+            return jsonify({'error': 'Server configuration error', 'details': 'ROBLOX_API_KEY not set'}), 500
         url = f"https://groups.roblox.com/v1/groups/{group_id}/roles"
         headers = {"Cookie": f".ROBLOSECURITY={roblox_api_key}"}
         resp = requests.get(url, headers=headers, timeout=10)
@@ -218,10 +211,10 @@ def get_role_id():
         return jsonify({'error': 'Rank not found'}), 404
     except requests.RequestException as e:
         logger.error(f"Error fetching role ID: {str(e)}, response={e.response.text if e.response else 'No response'}")
-        return jsonify({'error': 'Failed to fetch role data'}), 500
+        return jsonify({'error': 'Failed to fetch role data', 'details': e.response.text if e.response else 'No response'}), 500
     except Exception as e:
         logger.error(f"Error in get_role_id: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 @app.route('/set_group_rank', methods=['POST'])
 def set_group_rank():
@@ -232,18 +225,18 @@ def set_group_rank():
         role_id = data.get('roleId')
         if not all([user_id, group_id, role_id]):
             logger.error(f"Missing parameters: userId={user_id}, groupId={group_id}, roleId={role_id}")
-            return jsonify({'error': 'Missing userId, groupId, or roleId'}), 400
+            return jsonify({'error': 'Missing parameters', 'details': 'userId, groupId, or roleId missing'}), 400
         try:
             user_id = int(user_id)
             group_id = int(group_id)
             role_id = int(role_id)
         except ValueError:
             logger.error(f"Invalid integer parameters: userId={user_id}, groupId={group_id}, roleId={role_id}")
-            return jsonify({'error': 'userId, groupId, and roleId must be integers'}), 400
+            return jsonify({'error': 'Invalid parameters', 'details': 'userId, groupId, and roleId must be integers'}), 400
         roblox_api_key = os.getenv("ROBLOX_API_KEY")
         if not roblox_api_key:
             logger.error("ROBLOX_API_KEY not set in environment variables")
-            return jsonify({'error': 'Server configuration error'}), 500
+            return jsonify({'error': 'Server configuration error', 'details': 'ROBLOX_API_KEY not set'}), 500
         url = f"https://groups.roblox.com/v1/groups/{group_id}/users/{user_id}"
         headers = {"Cookie": f".ROBLOSECURITY={roblox_api_key}"}
         payload = {"roleId": role_id}
@@ -253,8 +246,19 @@ def set_group_rank():
         logger.info(f"Successfully set rank for user {user_id} in group {group_id} to role {role_id}")
         return jsonify({'status': 'success'})
     except requests.RequestException as e:
-        logger.error(f"Roblox API error: {str(e)}, response={e.response.text if e.response else 'No response'}")
-        return jsonify({'error': 'Failed to set rank', 'details': str(e)}), 500
+        error_msg = str(e)
+        response_text = e.response.text if e.response else "No response from Roblox API"
+        logger.error(f"Roblox API error: {error_msg}, response={response_text}")
+        status_code = e.response.status_code if e.response else 500
+        if status_code == 403:
+            error_type = 'Permission denied'
+        elif status_code == 400:
+            error_type = 'Invalid request'
+        elif status_code == 404:
+            error_type = 'Resource not found'
+        else:
+            error_type = 'Failed to set rank'
+        return jsonify({'error': error_type, 'details': response_text}), status_code
     except Exception as e:
         logger.error(f"Unexpected error in set_group_rank: {str(e)}")
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500

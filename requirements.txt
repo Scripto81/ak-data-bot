@@ -1,5 +1,6 @@
-Flask==2.2.2
-gunicorn==20.1.0
-Werkzeug==2.2.2
-requests==2.31.0
-python-dotenv==1.0.1
+fastapi
+uvicorn
+psycopg2-binary
+requests
+pyjwt
+discord.py

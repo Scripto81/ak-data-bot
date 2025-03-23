@@ -15,40 +15,32 @@ app = Flask(__name__)
 DATABASE = os.getenv("DATABASE_PATH", "xp_data.db")
 
 def get_db_connection():
-    try:
-        conn = sqlite3.connect(DATABASE, detect_types=sqlite3.PARSE_DECLTYPES)
-        conn.row_factory = sqlite3.Row
-        return conn
-    except sqlite3.Error as e:
-        logger.error(f"Database connection error: {str(e)}")
-        raise
+    conn = sqlite3.connect(DATABASE, detect_types=sqlite3.PARSE_DECLTYPES)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-    try:
-        conn = get_db_connection()
-        with conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS xp_data (
-                    userId TEXT PRIMARY KEY,
-                    username TEXT NOT NULL,
-                    xp INTEGER NOT NULL,
-                    offenseData TEXT,
-                    last_updated TEXT
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS xp_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    userId TEXT,
-                    xp_change INTEGER,
-                    timestamp TEXT,
-                    FOREIGN KEY (userId) REFERENCES xp_data(userId)
-                )
-            """)
-        conn.close()
-    except sqlite3.Error as e:
-        logger.error(f"Database initialization error: {str(e)}")
-        raise
+    conn = get_db_connection()
+    with conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS xp_data (
+                userId TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                xp INTEGER NOT NULL,
+                offenseData TEXT,
+                last_updated INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS xp_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                userId TEXT,
+                xp_change INTEGER,
+                timestamp INTEGER,
+                FOREIGN KEY (userId) REFERENCES xp_data(userId)
+            )
+        """)
+    conn.close()
 
 init_db()
 
@@ -64,17 +56,22 @@ def update_xp():
         username = data.get('username')
         xp = data.get('xp')
         offense_data = data.get('offenseData')
-        if not all([user_id, username, xp is not None]):
+        timestamp = data.get('timestamp')
+        if not all([user_id, username, xp is not None, timestamp is not None]):
             return jsonify({'error': 'Missing required data'}), 400
         if not isinstance(xp, int) or xp < 0:
             return jsonify({'error': 'XP must be a non-negative integer'}), 400
-        last_updated = datetime.datetime.utcnow().isoformat()
+        if not isinstance(timestamp, int):
+            return jsonify({'error': 'Timestamp must be an integer'}), 400
         offense_json = json.dumps(offense_data) if offense_data is not None else None
         conn = get_db_connection()
         with conn:
-            cur = conn.execute("SELECT xp FROM xp_data WHERE userId = ?", (str(user_id),))
+            cur = conn.execute("SELECT xp, last_updated FROM xp_data WHERE userId = ?", (str(user_id),))
             row = cur.fetchone()
             old_xp = row['xp'] if row else 0
+            old_timestamp = row['last_updated'] if row else 0
+            if timestamp <= old_timestamp:
+                return jsonify({'status': 'ignored', 'reason': 'Older timestamp'}), 200
             xp_change = xp - old_xp
             conn.execute("""
                 INSERT INTO xp_data (userId, username, xp, offenseData, last_updated)
@@ -84,13 +81,13 @@ def update_xp():
                     xp=excluded.xp,
                     offenseData=excluded.offenseData,
                     last_updated=excluded.last_updated
-            """, (str(user_id), username, xp, offense_json, last_updated))
+            """, (str(user_id), username, xp, offense_json, timestamp))
             if xp_change != 0:
                 conn.execute("INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (?, ?, ?)",
-                             (str(user_id), xp_change, last_updated))
+                             (str(user_id), xp_change, timestamp))
         conn.close()
-        logger.info(f"Updated XP for user {user_id}: {xp}")
-        return jsonify({'status': 'success'})
+        logger.info(f"Updated XP for user {user_id}: {xp} at {timestamp}")
+        return jsonify({'status': 'success', 'xp': xp, 'timestamp': timestamp})
     except Exception as e:
         logger.error(f"Error in update_xp: {str(e)}")
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
@@ -107,7 +104,7 @@ def get_user_data():
         conn.close()
         if row:
             offense_data = json.loads(row['offenseData']) if row['offenseData'] else {}
-            return jsonify(dict(row) | {'offenseData': offense_data})
+            return jsonify({'userId': row['userId'], 'username': row['username'], 'xp': row['xp'], 'offenseData': offense_data, 'timestamp': row['last_updated']})
         return jsonify({'error': 'User not found'}), 404
     except Exception as e:
         logger.error(f"Error in get_user_data: {str(e)}")
@@ -123,24 +120,25 @@ def set_xp():
             return jsonify({'error': 'Missing userId or xp'}), 400
         if not isinstance(new_xp, int) or new_xp < 0:
             return jsonify({'error': 'XP must be a non-negative integer'}), 400
-        last_updated = datetime.datetime.utcnow().isoformat()
+        timestamp = int(datetime.datetime.utcnow().timestamp())
         conn = get_db_connection()
         with conn:
-            cur = conn.execute("SELECT xp FROM xp_data WHERE userId = ?", (str(user_id),))
+            cur = conn.execute("SELECT xp, username FROM xp_data WHERE userId = ?", (str(user_id),))
             row = cur.fetchone()
             if not row:
                 conn.close()
                 return jsonify({'error': 'User not found'}), 404
             old_xp = row['xp']
+            username = row['username']
             xp_change = new_xp - old_xp
             conn.execute("UPDATE xp_data SET xp = ?, last_updated = ? WHERE userId = ?",
-                         (new_xp, last_updated, str(user_id)))
+                         (new_xp, timestamp, str(user_id)))
             if xp_change != 0:
                 conn.execute("INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (?, ?, ?)",
-                             (str(user_id), xp_change, last_updated))
+                             (str(user_id), xp_change, timestamp))
         conn.close()
-        logger.info(f"Set XP for user {user_id} to {new_xp}")
-        return jsonify({'status': 'success', 'newXp': new_xp})
+        logger.info(f"Set XP for user {user_id} to {new_xp} at {timestamp}")
+        return jsonify({'status': 'success', 'newXp': new_xp, 'timestamp': timestamp})
     except Exception as e:
         logger.error(f"Error in set_xp: {str(e)}")
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
@@ -183,7 +181,7 @@ def get_group_rank():
                 return jsonify({"rank": group["role"]["name"], "roleId": group["role"]["id"]})
         return jsonify({"rank": "Not in group", "roleId": 0})
     except requests.RequestException as e:
-        logger.error(f"Error fetching group rank: {str(e)}, response={e.response.text if e.response else 'No response'}")
+        logger.error(f"Error fetching group rank: {str(e)}")
         return jsonify({'error': 'Failed to fetch group data', 'details': e.response.text if e.response else 'No response'}), 500
     except Exception as e:
         logger.error(f"Error in get_group_rank: {str(e)}")
@@ -210,7 +208,7 @@ def get_role_id():
                 return jsonify({"roleId": role["id"]})
         return jsonify({'error': 'Rank not found'}), 404
     except requests.RequestException as e:
-        logger.error(f"Error fetching role ID: {str(e)}, response={e.response.text if e.response else 'No response'}")
+        logger.error(f"Error fetching role ID: {str(e)}")
         return jsonify({'error': 'Failed to fetch role data', 'details': e.response.text if e.response else 'No response'}), 500
     except Exception as e:
         logger.error(f"Error in get_role_id: {str(e)}")
@@ -225,14 +223,10 @@ def set_group_rank():
         role_id = data.get('roleId')
         if not all([user_id, group_id, role_id]):
             logger.error(f"Missing parameters: userId={user_id}, groupId={group_id}, roleId={role_id}")
-            return jsonify({'error': 'Missing parameters', 'details': 'userId, groupId, or roleId missing'}), 400
-        try:
-            user_id = int(user_id)
-            group_id = int(group_id)
-            role_id = int(role_id)
-        except ValueError:
-            logger.error(f"Invalid integer parameters: userId={user_id}, groupId={group_id}, roleId={role_id}")
-            return jsonify({'error': 'Invalid parameters', 'details': 'userId, groupId, and roleId must be integers'}), 400
+            return jsonify({'error': 'Missing parameters'}), 400
+        user_id = int(user_id)
+        group_id = int(group_id)
+        role_id = int(role_id)
         roblox_api_key = os.getenv("ROBLOX_API_KEY")
         if not roblox_api_key:
             logger.error("ROBLOX_API_KEY not set in environment variables")
@@ -240,25 +234,13 @@ def set_group_rank():
         url = f"https://groups.roblox.com/v1/groups/{group_id}/users/{user_id}"
         headers = {"Cookie": f".ROBLOSECURITY={roblox_api_key}"}
         payload = {"roleId": role_id}
-        logger.info(f"Sending request to Roblox API: {url}, payload={payload}")
         resp = requests.patch(url, headers=headers, json=payload, timeout=10)
         resp.raise_for_status()
         logger.info(f"Successfully set rank for user {user_id} in group {group_id} to role {role_id}")
         return jsonify({'status': 'success'})
     except requests.RequestException as e:
-        error_msg = str(e)
-        response_text = e.response.text if e.response else "No response from Roblox API"
-        logger.error(f"Roblox API error: {error_msg}, response={response_text}")
-        status_code = e.response.status_code if e.response else 500
-        if status_code == 403:
-            error_type = 'Permission denied'
-        elif status_code == 400:
-            error_type = 'Invalid request'
-        elif status_code == 404:
-            error_type = 'Resource not found'
-        else:
-            error_type = 'Failed to set rank'
-        return jsonify({'error': error_type, 'details': response_text}), status_code
+        logger.error(f"Roblox API error: {str(e)}")
+        return jsonify({'error': 'Failed to set rank', 'details': e.response.text if e.response else 'No response'}), 500
     except Exception as e:
         logger.error(f"Unexpected error in set_group_rank: {str(e)}")
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500

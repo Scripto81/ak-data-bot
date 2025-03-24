@@ -12,7 +12,6 @@ app = FastAPI()
 security = HTTPBearer()
 SECRET_KEY = os.getenv("JWT_SECRET")
 
-# Database connection function
 def get_db_connection():
     return psycopg2.connect(
         dbname=os.getenv("DB_NAME"),
@@ -24,7 +23,6 @@ def get_db_connection():
         sslmode="require"
     )
 
-# Initialize database tables
 def init_db():
     conn = get_db_connection()
     with conn:
@@ -59,19 +57,16 @@ def init_db():
 
 init_db()
 
-# JWT token verification
 def verify_token(auth: HTTPAuthorizationCredentials = Depends(security)):
     try:
         jwt.decode(auth.credentials, SECRET_KEY, algorithms=["HS256"])
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-# Health check endpoint
-@app.route('/', methods=['HEAD', 'GET'])
+@app.get('/')
 async def health_check():
-    return {"status": "ok"}, 200
+    return {"status": "ok"}
 
-# Update XP endpoint
 @app.post('/update_xp')
 async def update_xp(data: dict):
     try:
@@ -89,31 +84,31 @@ async def update_xp(data: dict):
         offense_json = json.dumps(offense_data) if offense_data is not None else None
         conn = get_db_connection()
         with conn:
-            cur = conn.execute("SELECT xp, last_updated FROM xp_data WHERE userId = ?", (str(user_id),))
-            row = cur.fetchone()
-            old_xp = row['xp'] if row else 0
-            old_timestamp = row['last_updated'] if row else 0
-            if timestamp <= old_timestamp:
-                return {"status": "ignored", "reason": "Older timestamp"}, 200
-            xp_change = xp - old_xp
-            conn.execute("""
-                INSERT INTO xp_data (userId, username, xp, offenseData, last_updated)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(userId) DO UPDATE SET
-                    username=excluded.username,
-                    xp=excluded.xp,
-                    offenseData=excluded.offenseData,
-                    last_updated=excluded.last_updated
-            """, (str(user_id), username, xp, offense_json, timestamp))
-            if xp_change != 0:
-                conn.execute("INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (?, ?, ?)",
-                             (str(user_id), xp_change, timestamp))
+            with conn.cursor() as cur:
+                cur.execute("SELECT xp, last_updated FROM xp_data WHERE userId = %s", (str(user_id),))
+                row = cur.fetchone()
+                old_xp = row['xp'] if row else 0
+                old_timestamp = row['last_updated'] if row else 0
+                if timestamp <= old_timestamp:
+                    return {"status": "ignored", "reason": "Older timestamp"}
+                xp_change = xp - old_xp
+                cur.execute("""
+                    INSERT INTO xp_data (userId, username, xp, offenseData, last_updated)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (userId) DO UPDATE SET
+                        username=excluded.username,
+                        xp=excluded.xp,
+                        offenseData=excluded.offenseData,
+                        last_updated=excluded.last_updated
+                """, (str(user_id), username, xp, offense_json, timestamp))
+                if xp_change != 0:
+                    cur.execute("INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (%s, %s, %s)",
+                                (str(user_id), xp_change, timestamp))
         conn.close()
         return {"status": "success", "xp": xp, "timestamp": timestamp}
     except Exception as e:
-        return {"error": "Internal server error", "details": str(e)}, 500
+        return {"error": "Internal server error", "details": str(e)}
 
-# Get user data endpoint
 @app.get('/get_user_data')
 async def get_user_data(request: Request):
     try:
@@ -138,7 +133,6 @@ async def get_user_data(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-# Set XP endpoint
 @app.post('/set_xp', dependencies=[Depends(verify_token)])
 async def set_xp(data: dict):
     try:
@@ -164,11 +158,11 @@ async def set_xp(data: dict):
                 if xp_change != 0:
                     cur.execute("INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (%s, %s, %s)",
                                 (str(user_id), xp_change, timestamp))
-        return {"status": "success", "newXp": new_xp, "timestamp": timestamp}
-    finally:
         conn.close()
+        return {"status": "success", "newXp": new_xp, "timestamp": timestamp}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-# Leaderboard endpoint
 @app.get('/leaderboard')
 async def get_leaderboard(request: Request):
     try:
@@ -180,13 +174,13 @@ async def get_leaderboard(request: Request):
             with conn.cursor() as cur:
                 cur.execute("SELECT username, xp FROM xp_data ORDER BY xp DESC LIMIT %s", (limit,))
                 leaderboard = [dict(row) for row in cur.fetchall()]
+        conn.close()
         return {'leaderboard': leaderboard}
     except ValueError:
         raise HTTPException(status_code=400, detail='Limit must be an integer')
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-# Get group rank endpoint
 @app.get('/get_group_rank')
 async def get_group_rank(request: Request):
     try:
@@ -211,7 +205,6 @@ async def get_group_rank(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-# Get role ID endpoint
 @app.get('/get_role_id')
 async def get_role_id(request: Request):
     try:
@@ -236,7 +229,6 @@ async def get_role_id(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-# Set group rank endpoint
 @app.post('/set_group_rank')
 async def set_group_rank(data: dict):
     try:
@@ -262,7 +254,6 @@ async def set_group_rank(data: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-# Store XP endpoint
 @app.post("/store_xp", dependencies=[Depends(verify_token)])
 async def store_xp(data: dict):
     try:
@@ -280,11 +271,11 @@ async def store_xp(data: dict):
                     "ON CONFLICT (discord_id) DO UPDATE SET stored_xp = stored_xp + %s",
                     (discord_id, xp_to_store, xp_to_store)
                 )
-        return {"status": "success", "stored_xp": xp_to_store}
-    finally:
         conn.close()
+        return {"status": "success", "stored_xp": xp_to_store}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-# Redeem XP endpoint (via Discord)
 @app.post("/redeem_xp", dependencies=[Depends(verify_token)])
 async def redeem_xp(data: dict):
     try:
@@ -321,11 +312,11 @@ async def redeem_xp(data: dict):
                     (roblox_user_id, stored_xp, timestamp)
                 )
                 cur.execute("DELETE FROM stored_xp WHERE discord_id = %s", (discord_id,))
-        return {"status": "success", "redeemed_xp": stored_xp, "new_xp": new_xp}
-    finally:
         conn.close()
+        return {"status": "success", "redeemed_xp": stored_xp, "new_xp": new_xp}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-# Redeem XP in-game endpoint (via Roblox)
 @app.post("/redeem_xp_ingame")
 async def redeem_xp_ingame(data: dict):
     try:
@@ -364,6 +355,7 @@ async def redeem_xp_ingame(data: dict):
                     (roblox_user_id, stored_xp, timestamp)
                 )
                 cur.execute("DELETE FROM stored_xp WHERE discord_id = %s", (discord_id,))
-        return {"status": "success", "redeemed_xp": stored_xp, "new_xp": new_xp}
-    finally:
         conn.close()
+        return {"status": "success", "redeemed_xp": stored_xp, "new_xp": new_xp}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

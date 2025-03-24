@@ -1,196 +1,178 @@
-import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, HTTPException, Depends, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import jwt
+import sqlite3
+from flask import Flask, request, jsonify
 import datetime
 import json
 import requests
+import os
+import logging
+from dotenv import load_dotenv
 
-app = FastAPI()
-security = HTTPBearer()
-SECRET_KEY = os.getenv("JWT_SECRET")
+load_dotenv()
+logging.basicConfig(level=logging.INFO, filename='flask_api.log', format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('flask_api')
+
+app = Flask(__name__)
+DATABASE = os.getenv("DATABASE_PATH", "xp_data.db")
 
 def get_db_connection():
-    return psycopg2.connect(
-        dbname=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT", "5432"),
-        cursor_factory=RealDictCursor,
-        sslmode="require"
-    )
+    try:
+        conn = sqlite3.connect(DATABASE, detect_types=sqlite3.PARSE_DECLTYPES)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except sqlite3.Error as e:
+        logger.error(f"Database connection error: {str(e)}")
+        raise
 
 def init_db():
-    conn = get_db_connection()
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+    try:
+        conn = get_db_connection()
+        with conn:
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS xp_data (
                     userId TEXT PRIMARY KEY,
                     username TEXT NOT NULL,
                     xp INTEGER NOT NULL,
-                    offenseData JSONB,
-                    last_updated BIGINT
-                );
-                CREATE TABLE IF NOT EXISTS xp_history (
-                    id SERIAL PRIMARY KEY,
-                    userId TEXT REFERENCES xp_data(userId),
-                    xp_change INTEGER,
-                    timestamp BIGINT
-                );
-                CREATE TABLE IF NOT EXISTS stored_xp (
-                    discord_id TEXT PRIMARY KEY,
-                    stored_xp INTEGER NOT NULL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS user_mappings (
-                    discord_id TEXT PRIMARY KEY,
-                    roblox_user_id TEXT NOT NULL,
-                    roblox_username TEXT NOT NULL,
-                    verified_at BIGINT
-                );
-                CREATE INDEX IF NOT EXISTS idx_username ON xp_data (LOWER(username));
+                    offenseData TEXT,
+                    last_updated TEXT
+                )
             """)
-    conn.close()
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS xp_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    userId TEXT,
+                    xp_change INTEGER,
+                    timestamp TEXT,
+                    FOREIGN KEY (userId) REFERENCES xp_data(userId)
+                )
+            """)
+        conn.close()
+    except sqlite3.Error as e:
+        logger.error(f"Database initialization error: {str(e)}")
+        raise
 
 init_db()
 
-def verify_token(auth: HTTPAuthorizationCredentials = Depends(security)):
-    try:
-        jwt.decode(auth.credentials, SECRET_KEY, algorithms=["HS256"])
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+@app.route('/', methods=['HEAD', 'GET'])
+def health_check():
+    return jsonify({"status": "ok"}), 200
 
-@app.get('/')
-async def health_check():
-    return {"status": "ok"}
-
-@app.post('/update_xp')
-async def update_xp(data: dict):
+@app.route('/update_xp', methods=['POST'])
+def update_xp():
     try:
+        data = request.get_json()
         user_id = data.get('userId')
         username = data.get('username')
         xp = data.get('xp')
         offense_data = data.get('offenseData')
-        timestamp = data.get('timestamp')
-        if not all([user_id, username, xp is not None, timestamp is not None]):
-            raise HTTPException(status_code=400, detail='Missing required data')
+        if not all([user_id, username, xp is not None]):
+            return jsonify({'error': 'Missing required data'}), 400
         if not isinstance(xp, int) or xp < 0:
-            raise HTTPException(status_code=400, detail='XP must be a non-negative integer')
-        if not isinstance(timestamp, int):
-            raise HTTPException(status_code=400, detail='Timestamp must be an integer')
+            return jsonify({'error': 'XP must be a non-negative integer'}), 400
+        last_updated = datetime.datetime.utcnow().isoformat()
         offense_json = json.dumps(offense_data) if offense_data is not None else None
         conn = get_db_connection()
         with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT xp, last_updated FROM xp_data WHERE userId = %s", (str(user_id),))
-                row = cur.fetchone()
-                old_xp = row['xp'] if row else 0
-                old_timestamp = row['last_updated'] if row else 0
-                if timestamp <= old_timestamp:
-                    return {"status": "ignored", "reason": "Older timestamp"}
-                xp_change = xp - old_xp
-                cur.execute("""
-                    INSERT INTO xp_data (userId, username, xp, offenseData, last_updated)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (userId) DO UPDATE SET
-                        username=excluded.username,
-                        xp=excluded.xp,
-                        offenseData=excluded.offenseData,
-                        last_updated=excluded.last_updated
-                """, (str(user_id), username, xp, offense_json, timestamp))
-                if xp_change != 0:
-                    cur.execute("INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (%s, %s, %s)",
-                                (str(user_id), xp_change, timestamp))
+            cur = conn.execute("SELECT xp FROM xp_data WHERE userId = ?", (str(user_id),))
+            row = cur.fetchone()
+            old_xp = row['xp'] if row else 0
+            xp_change = xp - old_xp
+            conn.execute("""
+                INSERT INTO xp_data (userId, username, xp, offenseData, last_updated)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(userId) DO UPDATE SET
+                    username=excluded.username,
+                    xp=excluded.xp,
+                    offenseData=excluded.offenseData,
+                    last_updated=excluded.last_updated
+            """, (str(user_id), username, xp, offense_json, last_updated))
+            if xp_change != 0:
+                conn.execute("INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (?, ?, ?)",
+                             (str(user_id), xp_change, last_updated))
         conn.close()
-        return {"status": "success", "xp": xp, "timestamp": timestamp}
+        logger.info(f"Updated XP for user {user_id}: {xp}")
+        return jsonify({'status': 'success'})
     except Exception as e:
-        return {"error": "Internal server error", "details": str(e)}
+        logger.error(f"Error in update_xp: {str(e)}")
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
-@app.get('/get_user_data')
-async def get_user_data(request: Request):
+@app.route('/get_user_data', methods=['GET'])
+def get_user_data():
     try:
-        username = request.query_params.get('username')
+        username = request.args.get('username')
         if not username:
-            raise HTTPException(status_code=400, detail='Username parameter is missing')
+            return jsonify({'error': 'Username parameter is missing'}), 400
         conn = get_db_connection()
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT * FROM xp_data WHERE LOWER(username)=%s", (username.lower(),))
-                row = cur.fetchone()
+        cur = conn.execute("SELECT * FROM xp_data WHERE LOWER(username)=?", (username.lower(),))
+        row = cur.fetchone()
+        conn.close()
         if row:
             offense_data = json.loads(row['offenseData']) if row['offenseData'] else {}
-            return {
-                'userId': row['userId'],
-                'username': row['username'],
-                'xp': row['xp'],
-                'offenseData': offense_data,
-                'timestamp': row['last_updated']
-            }
-        raise HTTPException(status_code=404, detail='User not found')
+            return jsonify(dict(row) | {'offenseData': offense_data})
+        return jsonify({'error': 'User not found'}), 404
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error in get_user_data: {str(e)}")
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
-@app.post('/set_xp', dependencies=[Depends(verify_token)])
-async def set_xp(data: dict):
+@app.route('/set_xp', methods=['POST'])
+def set_xp():
     try:
+        data = request.get_json()
         user_id = data.get('userId')
         new_xp = data.get('xp')
         if not all([user_id, new_xp is not None]):
-            raise HTTPException(status_code=400, detail='Missing userId or xp')
+            return jsonify({'error': 'Missing userId or xp'}), 400
         if not isinstance(new_xp, int) or new_xp < 0:
-            raise HTTPException(status_code=400, detail='XP must be a non-negative integer')
-        timestamp = int(datetime.datetime.utcnow().timestamp())
+            return jsonify({'error': 'XP must be a non-negative integer'}), 400
+        last_updated = datetime.datetime.utcnow().isoformat()
         conn = get_db_connection()
         with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT xp, username FROM xp_data WHERE userId = %s", (str(user_id),))
-                row = cur.fetchone()
-                if not row:
-                    raise HTTPException(status_code=404, detail='User not found')
-                old_xp = row["xp"]
-                username = row["username"]
-                xp_change = new_xp - old_xp
-                cur.execute("UPDATE xp_data SET xp = %s, last_updated = %s WHERE userId = %s",
-                            (new_xp, timestamp, str(user_id)))
-                if xp_change != 0:
-                    cur.execute("INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (%s, %s, %s)",
-                                (str(user_id), xp_change, timestamp))
+            cur = conn.execute("SELECT xp FROM xp_data WHERE userId = ?", (str(user_id),))
+            row = cur.fetchone()
+            if not row:
+                conn.close()
+                return jsonify({'error': 'User not found'}), 404
+            old_xp = row['xp']
+            xp_change = new_xp - old_xp
+            conn.execute("UPDATE xp_data SET xp = ?, last_updated = ? WHERE userId = ?",
+                         (new_xp, last_updated, str(user_id)))
+            if xp_change != 0:
+                conn.execute("INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (?, ?, ?)",
+                             (str(user_id), xp_change, last_updated))
         conn.close()
-        return {"status": "success", "newXp": new_xp, "timestamp": timestamp}
+        logger.info(f"Set XP for user {user_id} to {new_xp}")
+        return jsonify({'status': 'success', 'newXp': new_xp})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error in set_xp: {str(e)}")
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
-@app.get('/leaderboard')
-async def get_leaderboard(request: Request):
+@app.route('/leaderboard', methods=['GET'])
+def get_leaderboard():
     try:
-        limit = min(int(request.query_params.get('limit', 10)), 50)
+        limit = min(int(request.args.get('limit', 10)), 50)
         if limit <= 0:
-            raise HTTPException(status_code=400, detail='Limit must be positive')
+            return jsonify({'error': 'Limit must be positive'}), 400
         conn = get_db_connection()
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT username, xp FROM xp_data ORDER BY xp DESC LIMIT %s", (limit,))
-                leaderboard = [dict(row) for row in cur.fetchall()]
+        cur = conn.execute("SELECT username, xp FROM xp_data ORDER BY xp DESC LIMIT ?", (limit,))
+        leaderboard = [dict(row) for row in cur.fetchall()]
         conn.close()
-        return {'leaderboard': leaderboard}
+        return jsonify({'leaderboard': leaderboard})
     except ValueError:
-        raise HTTPException(status_code=400, detail='Limit must be an integer')
+        return jsonify({'error': 'Limit must be an integer'}), 400
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error in get_leaderboard: {str(e)}")
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
-@app.get('/get_group_rank')
-async def get_group_rank(request: Request):
+@app.route('/get_group_rank', methods=['GET'])
+def get_group_rank():
     try:
-        user_id = request.query_params.get('userId')
-        group_id = request.query_params.get('groupId')
+        user_id = request.args.get('userId')
+        group_id = request.args.get('groupId')
         if not all([user_id, group_id]):
-            raise HTTPException(status_code=400, detail='Missing userId or groupId')
+            return jsonify({'error': 'Missing userId or groupId'}), 400
         roblox_api_key = os.getenv("ROBLOX_API_KEY")
         if not roblox_api_key:
-            raise HTTPException(status_code=500, detail='Server configuration error: ROBLOX_API_KEY not set')
+            logger.error("ROBLOX_API_KEY not set in environment variables")
+            return jsonify({'error': 'Server configuration error', 'details': 'ROBLOX_API_KEY not set'}), 500
         url = f"https://groups.roblox.com/v1/users/{user_id}/groups/roles"
         headers = {"Cookie": f".ROBLOSECURITY={roblox_api_key}"}
         resp = requests.get(url, headers=headers, timeout=10)
@@ -198,23 +180,26 @@ async def get_group_rank(request: Request):
         data = resp.json()
         for group in data.get("data", []):
             if str(group["group"]["id"]) == str(group_id):
-                return {"rank": group["role"]["name"], "roleId": group["role"]["id"]}
-        return {"rank": "Not in group", "roleId": 0}
+                return jsonify({"rank": group["role"]["name"], "roleId": group["role"]["id"]})
+        return jsonify({"rank": "Not in group", "roleId": 0})
     except requests.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch group data: {e.response.text if e.response else 'No response'}")
+        logger.error(f"Error fetching group rank: {str(e)}, response={e.response.text if e.response else 'No response'}")
+        return jsonify({'error': 'Failed to fetch group data', 'details': e.response.text if e.response else 'No response'}), 500
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error in get_group_rank: {str(e)}")
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
-@app.get('/get_role_id')
-async def get_role_id(request: Request):
+@app.route('/get_role_id', methods=['GET'])
+def get_role_id():
     try:
-        group_id = request.query_params.get('groupId')
-        rank_name = request.query_params.get('rankName')
+        group_id = request.args.get('groupId')
+        rank_name = request.args.get('rankName')
         if not all([group_id, rank_name]):
-            raise HTTPException(status_code=400, detail='Missing groupId or rankName')
+            return jsonify({'error': 'Missing groupId or rankName'}), 400
         roblox_api_key = os.getenv("ROBLOX_API_KEY")
         if not roblox_api_key:
-            raise HTTPException(status_code=500, detail='Server configuration error: ROBLOX_API_KEY not set')
+            logger.error("ROBLOX_API_KEY not set in environment variables")
+            return jsonify({'error': 'Server configuration error', 'details': 'ROBLOX_API_KEY not set'}), 500
         url = f"https://groups.roblox.com/v1/groups/{group_id}/roles"
         headers = {"Cookie": f".ROBLOSECURITY={roblox_api_key}"}
         resp = requests.get(url, headers=headers, timeout=10)
@@ -222,140 +207,62 @@ async def get_role_id(request: Request):
         data = resp.json()
         for role in data.get("roles", []):
             if role["name"].lower() == rank_name.lower():
-                return {"roleId": role["id"]}
-        raise HTTPException(status_code=404, detail='Rank not found')
+                return jsonify({"roleId": role["id"]})
+        return jsonify({'error': 'Rank not found'}), 404
     except requests.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch role data: {e.response.text if e.response else 'No response'}")
+        logger.error(f"Error fetching role ID: {str(e)}, response={e.response.text if e.response else 'No response'}")
+        return jsonify({'error': 'Failed to fetch role data', 'details': e.response.text if e.response else 'No response'}), 500
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Error in get_role_id: {str(e)}")
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
-@app.post('/set_group_rank')
-async def set_group_rank(data: dict):
+@app.route('/set_group_rank', methods=['POST'])
+def set_group_rank():
     try:
+        data = request.get_json()
         user_id = data.get('userId')
         group_id = data.get('groupId')
         role_id = data.get('roleId')
         if not all([user_id, group_id, role_id]):
-            raise HTTPException(status_code=400, detail='Missing parameters')
-        user_id = int(user_id)
-        group_id = int(group_id)
-        role_id = int(role_id)
+            logger.error(f"Missing parameters: userId={user_id}, groupId={group_id}, roleId={role_id}")
+            return jsonify({'error': 'Missing parameters', 'details': 'userId, groupId, or roleId missing'}), 400
+        try:
+            user_id = int(user_id)
+            group_id = int(group_id)
+            role_id = int(role_id)
+        except ValueError:
+            logger.error(f"Invalid integer parameters: userId={user_id}, groupId={group_id}, roleId={role_id}")
+            return jsonify({'error': 'Invalid parameters', 'details': 'userId, groupId, and roleId must be integers'}), 400
         roblox_api_key = os.getenv("ROBLOX_API_KEY")
         if not roblox_api_key:
-            raise HTTPException(status_code=500, detail='Server configuration error: ROBLOX_API_KEY not set')
+            logger.error("ROBLOX_API_KEY not set in environment variables")
+            return jsonify({'error': 'Server configuration error', 'details': 'ROBLOX_API_KEY not set'}), 500
         url = f"https://groups.roblox.com/v1/groups/{group_id}/users/{user_id}"
         headers = {"Cookie": f".ROBLOSECURITY={roblox_api_key}"}
         payload = {"roleId": role_id}
+        logger.info(f"Sending request to Roblox API: {url}, payload={payload}")
         resp = requests.patch(url, headers=headers, json=payload, timeout=10)
         resp.raise_for_status()
-        return {'status': 'success'}
+        logger.info(f"Successfully set rank for user {user_id} in group {group_id} to role {role_id}")
+        return jsonify({'status': 'success'})
     except requests.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to set rank: {e.response.text if e.response else 'No response'}")
+        error_msg = str(e)
+        response_text = e.response.text if e.response else "No response from Roblox API"
+        logger.error(f"Roblox API error: {error_msg}, response={response_text}")
+        status_code = e.response.status_code if e.response else 500
+        if status_code == 403:
+            error_type = 'Permission denied'
+        elif status_code == 400:
+            error_type = 'Invalid request'
+        elif status_code == 404:
+            error_type = 'Resource not found'
+        else:
+            error_type = 'Failed to set rank'
+        return jsonify({'error': error_type, 'details': response_text}), status_code
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.error(f"Unexpected error in set_group_rank: {str(e)}")
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
-@app.post("/store_xp", dependencies=[Depends(verify_token)])
-async def store_xp(data: dict):
-    try:
-        discord_id = data.get("discord_id")
-        xp_to_store = data.get("xp")
-        if not all([discord_id, xp_to_store is not None]):
-            raise HTTPException(status_code=400, detail="Missing discord_id or xp")
-        if not isinstance(xp_to_store, int) or xp_to_store < 0:
-            raise HTTPException(status_code=400, detail="XP must be non-negative")
-        conn = get_db_connection()
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO stored_xp (discord_id, stored_xp) VALUES (%s, %s) "
-                    "ON CONFLICT (discord_id) DO UPDATE SET stored_xp = stored_xp + %s",
-                    (discord_id, xp_to_store, xp_to_store)
-                )
-        conn.close()
-        return {"status": "success", "stored_xp": xp_to_store}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.post("/redeem_xp", dependencies=[Depends(verify_token)])
-async def redeem_xp(data: dict):
-    try:
-        discord_id = data.get("discord_id")
-        conn = get_db_connection()
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT roblox_user_id FROM user_mappings WHERE discord_id = %s", (discord_id,))
-                mapping = cur.fetchone()
-                if not mapping:
-                    raise HTTPException(status_code=400, detail="User not verified")
-                roblox_user_id = mapping["roblox_user_id"]
-                
-                cur.execute("SELECT stored_xp FROM stored_xp WHERE discord_id = %s", (discord_id,))
-                row = cur.fetchone()
-                if not row or row["stored_xp"] <= 0:
-                    raise HTTPException(status_code=404, detail="No stored XP")
-                stored_xp = row["stored_xp"]
-                
-                cur.execute("SELECT xp FROM xp_data WHERE userId = %s", (roblox_user_id,))
-                xp_row = cur.fetchone()
-                if not xp_row:
-                    raise HTTPException(status_code=404, detail="User not found in xp_data")
-                current_xp = xp_row["xp"]
-                new_xp = current_xp + stored_xp
-                timestamp = int(datetime.datetime.utcnow().timestamp())
-                
-                cur.execute(
-                    "UPDATE xp_data SET xp = %s, last_updated = %s WHERE userId = %s",
-                    (new_xp, timestamp, roblox_user_id)
-                )
-                cur.execute(
-                    "INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (%s, %s, %s)",
-                    (roblox_user_id, stored_xp, timestamp)
-                )
-                cur.execute("DELETE FROM stored_xp WHERE discord_id = %s", (discord_id,))
-        conn.close()
-        return {"status": "success", "redeemed_xp": stored_xp, "new_xp": new_xp}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.post("/redeem_xp_ingame")
-async def redeem_xp_ingame(data: dict):
-    try:
-        roblox_user_id = data.get("roblox_user_id")
-        if not roblox_user_id:
-            raise HTTPException(status_code=400, detail="Missing roblox_user_id")
-        conn = get_db_connection()
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT discord_id FROM user_mappings WHERE roblox_user_id = %s", (roblox_user_id,))
-                mapping = cur.fetchone()
-                if not mapping:
-                    raise HTTPException(status_code=400, detail="User not verified")
-                discord_id = mapping["discord_id"]
-                
-                cur.execute("SELECT stored_xp FROM stored_xp WHERE discord_id = %s", (discord_id,))
-                row = cur.fetchone()
-                if not row or row["stored_xp"] <= 0:
-                    raise HTTPException(status_code=404, detail="No stored XP")
-                stored_xp = row["stored_xp"]
-                
-                cur.execute("SELECT xp FROM xp_data WHERE userId = %s", (roblox_user_id,))
-                xp_row = cur.fetchone()
-                if not xp_row:
-                    raise HTTPException(status_code=404, detail="User not found in xp_data")
-                current_xp = xp_row["xp"]
-                new_xp = current_xp + stored_xp
-                timestamp = int(datetime.datetime.utcnow().timestamp())
-                
-                cur.execute(
-                    "UPDATE xp_data SET xp = %s, last_updated = %s WHERE userId = %s",
-                    (new_xp, timestamp, roblox_user_id)
-                )
-                cur.execute(
-                    "INSERT INTO xp_history (userId, xp_change, timestamp) VALUES (%s, %s, %s)",
-                    (roblox_user_id, stored_xp, timestamp)
-                )
-                cur.execute("DELETE FROM stored_xp WHERE discord_id = %s", (discord_id,))
-        conn.close()
-        return {"status": "success", "redeemed_xp": stored_xp, "new_xp": new_xp}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=os.getenv("FLASK_DEBUG", "False") == "True")

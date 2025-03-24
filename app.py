@@ -1,9 +1,9 @@
+import os
 import sqlite3
 from flask import Flask, request, jsonify
 import datetime
 import json
 import requests
-import os
 import logging
 from dotenv import load_dotenv
 
@@ -90,7 +90,7 @@ def update_xp():
                              (str(user_id), xp_change, last_updated))
         conn.close()
         logger.info(f"Updated XP for user {user_id}: {xp}")
-        return jsonify({'status': 'success'})
+        return jsonify({'status': 'success', 'xp': xp, 'last_updated': last_updated})
     except Exception as e:
         logger.error(f"Error in update_xp: {str(e)}")
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
@@ -113,6 +113,27 @@ def get_user_data():
         logger.error(f"Error in get_user_data: {str(e)}")
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
+@app.route('/get_multiple_user_data', methods=['POST'])
+def get_multiple_user_data():
+    try:
+        data = request.get_json()
+        usernames = data.get('usernames', [])
+        if not usernames or not isinstance(usernames, list):
+            return jsonify({'error': 'Usernames must be a non-empty list'}), 400
+        conn = get_db_connection()
+        placeholders = ','.join(['?' for _ in usernames])
+        cur = conn.execute(f"SELECT * FROM xp_data WHERE LOWER(username) IN ({placeholders})", [u.lower() for u in usernames])
+        rows = cur.fetchall()
+        conn.close()
+        result = {}
+        for row in rows:
+            offense_data = json.loads(row['offenseData']) if row['offenseData'] else {}
+            result[row['username']] = dict(row) | {'offenseData': offense_data}
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Error in get_multiple_user_data: {str(e)}")
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
+
 @app.route('/set_xp', methods=['POST'])
 def set_xp():
     try:
@@ -126,12 +147,13 @@ def set_xp():
         last_updated = datetime.datetime.utcnow().isoformat()
         conn = get_db_connection()
         with conn:
-            cur = conn.execute("SELECT xp FROM xp_data WHERE userId = ?", (str(user_id),))
+            cur = conn.execute("SELECT xp, username FROM xp_data WHERE userId = ?", (str(user_id),))
             row = cur.fetchone()
             if not row:
                 conn.close()
                 return jsonify({'error': 'User not found'}), 404
             old_xp = row['xp']
+            username = row['username']
             xp_change = new_xp - old_xp
             conn.execute("UPDATE xp_data SET xp = ?, last_updated = ? WHERE userId = ?",
                          (new_xp, last_updated, str(user_id)))
@@ -140,7 +162,7 @@ def set_xp():
                              (str(user_id), xp_change, last_updated))
         conn.close()
         logger.info(f"Set XP for user {user_id} to {new_xp}")
-        return jsonify({'status': 'success', 'newXp': new_xp})
+        return jsonify({'status': 'success', 'newXp': new_xp, 'last_updated': last_updated, 'username': username})
     except Exception as e:
         logger.error(f"Error in set_xp: {str(e)}")
         return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
